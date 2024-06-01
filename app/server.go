@@ -10,17 +10,41 @@ import (
 
 const CRLF = "\r\n"
 
-type Method string
+type RequestMethod string
 
 const (
-	GET    Method = "GET"
-	POST   Method = "POST"
-	PUT    Method = "PUT"
-	DELETE Method = "DELETE"
+	GET    RequestMethod = "GET"
+	POST   RequestMethod = "POST"
+	PUT    RequestMethod = "PUT"
+	DELETE RequestMethod = "DELETE"
 )
 
+type ResponseCode string
+
+const (
+	OK ResponseCode = "HTTP/1.1 200 OK" + CRLF
+	NF ResponseCode = "HTTP/1.1 404 Not Found" + CRLF
+	CR ResponseCode = "HTTP/1.1 201 Created" + CRLF
+)
+
+func responseCode(code ResponseCode) string {
+	return string(ResponseCode(code))
+}
+
+func contentType(contentType string) string {
+	return fmt.Sprintf("Content-Type: %s%s", contentType, CRLF)
+}
+
+func contentLength[T string | []byte](content T) string {
+	return fmt.Sprintf("Content-Length: %d%s", len(content), CRLF)
+}
+
+func contentEncoding(contentEncoding string) string {
+	return fmt.Sprintf("Content-Encoding: %s%s", contentEncoding, CRLF)
+}
+
 type Request struct {
-	method  Method
+	method  RequestMethod
 	path    string
 	headers []string
 }
@@ -45,6 +69,10 @@ func main() {
 	}
 }
 
+func respond(conn net.Conn, message ...string) (int, error) {
+	return conn.Write([]byte(fmt.Sprint(strings.Join(message, "") + CRLF)))
+}
+
 func handleConnection(conn net.Conn) {
 	// Allocate request space
 	data := make([]byte, 1024)
@@ -56,86 +84,42 @@ func handleConnection(conn net.Conn) {
 	}
 
 	// Parse request lines
-	request := parseRequest(data)
+	request := parseData(data)
+	if err != nil {
+		fmt.Println("Error parsing request: ", err.Error())
+		os.Exit(1)
+	}
 
+	// Calls the HTTP request method
 	switch {
 	case request.method == GET &&
 		request.path == "/":
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-
+		respond(conn, responseCode(OK))
 	case request.method == GET &&
 		strings.HasPrefix(request.path, "/echo"):
-		echo(conn, request.path)
-
+		echo(conn, request)
 	case request.method == GET &&
 		strings.HasPrefix(request.path, "/files"):
 		getFiles(conn, request)
-
 	case request.method == POST &&
 		strings.HasPrefix(request.path, "/files"):
 		postFiles(conn, request)
-
 	default:
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		respond(conn, responseCode(NF))
 	}
 
 	conn.Close()
 }
 
 // Parses the request lines into a Request
-func parseRequest(data []byte) Request {
+func parseData(data []byte) Request {
 	request := string(bytes.Trim(data, "\x00"))
 	requestLines := strings.Split(request, CRLF)
 	parts := strings.Split(requestLines[0], " ")
 
 	return Request{
-		method:  Method(parts[0]),
+		method:  RequestMethod(parts[0]),
 		path:    parts[1],
 		headers: requestLines[1:],
 	}
-}
-
-// routes
-
-// Implements `/echo` route
-func echo(conn net.Conn, path string) {
-	body := strings.Split(path, "/echo/")[1]
-
-	respFormat := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s"
-	conn.Write([]byte(fmt.Sprintf(respFormat, len(body), body)))
-}
-
-// Implements `/getFiles` route
-func getFiles(conn net.Conn, request Request) {
-	directory := os.Args[2]
-	fileName := strings.TrimPrefix(request.path, "/files/")
-
-	data, err := os.ReadFile(directory + fileName)
-
-	if err != nil {
-		resp := "HTTP/1.1 404 Not Found\r\n\r\n"
-		conn.Write([]byte(resp))
-		return
-	}
-
-	resp := "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s"
-	conn.Write([]byte(fmt.Sprintf(resp, len(data), string(data))))
-
-}
-
-// Implements the `/upload` route
-func postFiles(conn net.Conn, request Request) {
-	directory := os.Args[2]
-	fileName := strings.TrimPrefix(request.path, "/files/")
-
-	err := os.WriteFile(directory+fileName, []byte(request.headers[len(request.headers)-1]), os.ModeTemporary)
-
-	if err != nil {
-		resp := "HTTP/1.1 404 Not Found\r\n\r\n"
-		conn.Write([]byte(resp))
-		return
-	}
-
-	resp := "HTTP/1.1 201 Created\r\n\r\n"
-	conn.Write([]byte(fmt.Sprintf(resp)))
 }
